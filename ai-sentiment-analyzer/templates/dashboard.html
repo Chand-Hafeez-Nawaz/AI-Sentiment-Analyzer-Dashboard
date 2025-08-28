@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Sentiment Analyzer Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root { --bg: #0b1220; --card: #121a2b; --text: #e6e8ec; --muted: #9aa4b2; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+    header { padding: 24px; border-bottom: 1px solid #1f2a44; position: sticky; top: 0; background: rgba(11,18,32,0.85); backdrop-filter: blur(6px); }
+    h1 { margin: 0; font-size: 20px; font-weight: 600; }
+    main { padding: 24px; display: grid; gap: 24px; grid-template-columns: 1fr; max-width: 1100px; margin: 0 auto; }
+    .card { background: var(--card); border: 1px solid #1f2a44; border-radius: 16px; padding: 16px; }
+    .row { display: grid; grid-template-columns: 2fr 3fr; gap: 24px; }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .metric { background: #0e1626; border: 1px solid #1f2a44; border-radius: 12px; padding: 12px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    textarea { width: 100%; background: #0e1626; color: var(--text); border: 1px solid #1f2a44; border-radius: 8px; padding: 12px; min-height: 120px; resize: vertical; }
+    button { background: #3b82f6; color: white; border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 600; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 10px 0; border-bottom: 1px solid #1f2a44; }
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .POSITIVE { background: rgba(34,197,94,.15); color: #4ade80; }
+    .NEGATIVE { background: rgba(239,68,68,.15); color: #f87171; }
+    .NEUTRAL  { background: rgba(148,163,184,.15); color: #cbd5e1; }
+    .footer { text-align: center; color: var(--muted); font-size: 12px; }
+    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AI-Based Sentiment Analyzer</h1>
+  </header>
+  <main>
+    <section class="row">
+      <div class="card">
+        <h3>Analyze Text</h3>
+        <p class="muted">Paste social media posts or reviews below (one per line) then click Analyze.</p>
+        <textarea id="inputText" placeholder="I love this product!\nThe delivery was late and support was unhelpful."></textarea>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button id="analyzeBtn">Analyze</button>
+          <span id="status" class="muted"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Recent Analyses</h3>
+        <ul id="recentList"></ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Overview</h3>
+      <div class="metrics">
+        <div class="metric">
+          <div class="muted">Positive</div>
+          <div id="metricPositive" style="font-size:22px;font-weight:700;">0</div>
+        </div>
+        <div class="metric">
+          <div class="muted">Neutral</div>
+          <div id="metricNeutral" style="font-size:22px;font-weight:700;">0</div>
+        </div>
+        <div class="metric">
+          <div class="muted">Negative</div>
+          <div id="metricNegative" style="font-size:22px;font-weight:700;">0</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Sentiment Over Time</h3>
+      <canvas id="timelineChart" height="80"></canvas>
+    </section>
+
+    <div class="footer">Built with Flask · Hugging Face Transformers · MongoDB</div>
+  </main>
+
+<script>
+const recentList = document.getElementById('recentList');
+const metricPositive = document.getElementById('metricPositive');
+const metricNeutral = document.getElementById('metricNeutral');
+const metricNegative = document.getElementById('metricNegative');
+const statusEl = document.getElementById('status');
+let timelineChart;
+
+async function fetchRecent() {
+  const res = await fetch('/api/recent?limit=10');
+  const data = await res.json();
+  recentList.innerHTML = '';
+  data.items.forEach(item => {
+    const li = document.createElement('li');
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + item.label;
+    badge.textContent = item.label;
+    li.innerHTML = `<div style="display:flex;justify-content:space-between;gap:12px"><div style="flex:1">${escapeHtml(item.text)}</div></div>`;
+    li.appendChild(badge);
+    recentList.appendChild(li);
+  });
+}
+
+async function fetchStats() {
+  const res = await fetch('/api/stats');
+  const data = await res.json();
+
+  // Update metrics
+  const counts = {POSITIVE:0, NEUTRAL:0, NEGATIVE:0};
+  data.counts.forEach(c => { counts[c._id] = c.count; });
+  metricPositive.textContent = counts.POSITIVE || 0;
+  metricNeutral.textContent = counts.NEUTRAL || 0;
+  metricNegative.textContent = counts.NEGATIVE || 0;
+
+  // Update timeline chart
+  const labels = data.timeline.map(t => t.date);
+  const pos = data.timeline.map(t => t.positive);
+  const neu = data.timeline.map(t => t.neutral);
+  const neg = data.timeline.map(t => t.negative);
+
+  const ctx = document.getElementById('timelineChart').getContext('2d');
+  if (timelineChart) {
+    timelineChart.destroy();
+  }
+  timelineChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Positive', data: pos, fill: false },
+        { label: 'Neutral', data: neu, fill: false },
+        { label: 'Negative', data: neg, fill: false },
+      ]
+    },
+    options: {
+      plugins: {
+        legend: { labels: { color: '#e6e8ec' } }
+      },
+      responsive: true,
+      scales: {
+        x: { ticks: { color: '#cbd5e1' }, grid: { color: 'rgba(148,163,184,.15)' } },
+        y: { ticks: { color: '#cbd5e1' }, grid: { color: 'rgba(148,163,184,.15)' }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, function (m) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m];
+  });
+}
+
+document.getElementById('analyzeBtn').addEventListener('click', async () => {
+  const text = document.getElementById('inputText').value.trim();
+  if (!text) return;
+  const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+  statusEl.textContent = 'Analyzing...';
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ texts: lines, source: 'dashboard' })
+  });
+  if (res.ok) {
+    statusEl.textContent = 'Done';
+    await fetchRecent();
+    await fetchStats();
+  } else {
+    statusEl.textContent = 'Error analyzing text';
+  }
+});
+
+async function init() {
+  await fetchRecent();
+  await fetchStats();
+}
+init();
+</script>
+
+</body>
+</html>
